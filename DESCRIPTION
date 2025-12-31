@@ -1,0 +1,29 @@
+Package: mtkg.analytics
+Type: Package
+Title: Marketing Analytics Teaching Utilities
+Version: 0.1.0
+Authors@R: person("Daniel", "Katz", email = "d.katz@northeastern.edu", role = c("aut", "cre"))
+Description: Teaching-oriented helpers for effect sizes, regression summaries,
+    multiple comparisons, survival AFT summaries, and reliability diagnostics.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 4.1.0)
+Imports:
+    stats,
+    utils
+Suggests:
+    dplyr,
+    tibble,
+    magrittr,
+    jtools,
+    finalfit,
+    glmtoolbox,
+    estimatr,
+    margins,
+    multcomp,
+    Hmisc,
+    psych,
+    lsr,
+    pwr,
+    survival

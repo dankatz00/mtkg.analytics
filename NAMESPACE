@@ -1,0 +1,8 @@
+export(cohens_effsize)
+export(summ_glht)
+export(summ_lm)
+export(summ_lm_robust)
+export(summ_logit)
+export(summ_aft)
+export(predict_aft_fail_rate)
+export(cronbach_summary)
