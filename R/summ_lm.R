@@ -1,13 +1,13 @@
 summ_lm <- function(model, k = NULL, pct_train = NULL,
-                    cohens_d_col = TRUE,
-                    sd_d        = FALSE,
-                    vif_col     = TRUE,
-                    PI_col      = TRUE) {
+                    std_est_col = TRUE,
+                    sd_est      = FALSE,
+                    vif_col      = TRUE,
+                    PI_col       = TRUE) {
   
   if (!inherits(model, "lm") && !inherits(model, "lm_robust")) {
     stop("`model` must be a fitted lm or lm_robust object.")
   }
-  if (inherits(model, "lm_robust")) return(summ_lm_robust(model, k=k, pct_train=pct_train, sd_d=sd_d, vif_col=vif_col, PI_col=PI_col))
+  if (inherits(model, "lm_robust")) return(summ_lm_robust(model, k=k, pct_train=pct_train, sd_est=sd_est, vif_col=vif_col, PI_col=PI_col))
   set.seed(123)
   
   # -- silent, robust package ensure ------------------------------
@@ -57,19 +57,15 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     1 - sum((y - yhat)^2) / SST
   }
   
-  cohen_d_from_fit <- function(fit_no_int_names, b, se, df) {
-    tval <- b / se
-    t2   <- tval^2
-    pr2  <- t2 / pmax(t2 + df, .Machine$double.eps)
-    r    <- sqrt(pmax(pr2, 0))
-    d    <- 2 * r / sqrt(pmax(1 - r^2, .Machine$double.eps))
-    names(d) <- fit_no_int_names
-    d * sign(b)
+  # Standardized estimate from coefficient, predictor SD, and outcome SD
+  # b_std = b * sd(x) / sd(y)
+  std_est_from_fit <- function(coef_names, b, sd_x_vec, sd_y) {
+    setNames(b * sd_x_vec / sd_y, coef_names)
   }
   
   # --- aGVIF from glmtoolbox on the ORIGINAL lm at the COEFFICIENT level ---
   .agvif_glmtoolbox_vec <- function(fitted_model) {
-    # suppress gvif()’s printed output
+    # suppress gvif()'s printed output
     G <- {
       suppressMessages(suppressWarnings(
         capture.output(out <- glmtoolbox::gvif(fitted_model))
@@ -116,27 +112,26 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
                             term     = term_labels[assign_vec],
                             stringsAsFactors = FALSE)
   
-  ## ---------------- Cohen's d via t-stat from the fitted lm ----------------
-  cohen_d_fun <- function(fitted_lm) {
+  ## ---------------- Standardized estimate from the fitted lm ----------------
+  std_est_fun <- function(fitted_lm) {
     sm <- summary(fitted_lm)$coefficients
     rn <- rownames(sm); rn <- rn[rn != "(Intercept)"]
     if (!length(rn)) {
       return(data.frame(variable = character(0),
-                        cohens_d = numeric(0),
+                        std_est = numeric(0),
                         stringsAsFactors = FALSE))
     }
-    tval  <- sm[rn, "t value"]
-    beta_sign <- sign(sm[rn, "Estimate"])
-    df    <- fitted_lm$df.residual
-    t2  <- tval^2
-    pr2 <- t2 / pmax(t2 + df, .Machine$double.eps)
-    r   <- sqrt(pmax(pr2, 0))
-    d   <- 2 * r / sqrt(pmax(1 - r^2, .Machine$double.eps))
-    d   <- d * beta_sign
-    data.frame(variable = rn, cohens_d = as.numeric(d), stringsAsFactors = FALSE)
+    mm  <- model.matrix(fitted_lm)
+    X_noi <- mm[, rn, drop = FALSE]
+    y_fit <- model.response(model.frame(fitted_lm))
+    sd_y  <- sd(y_fit)
+    sd_x_vec <- apply(X_noi, 2, sd)
+    b     <- sm[rn, "Estimate"]
+    std_b <- b * sd_x_vec / sd_y
+    data.frame(variable = rn, std_est = as.numeric(std_b), stringsAsFactors = FALSE)
   }
   
-  cohen_d_df <- cohen_d_fun(model)
+  std_est_df <- std_est_fun(model)
   
   ## ---------------- VIF (aGVIF) ----------------
   vif_values <- if (ncol(model[["model"]]) > 2) {
@@ -190,49 +185,42 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     r2_oos <- calc_R2(y, y_pred_all, has_intercept)
   }
   
-  ## ----- SD of Cohen's d across folds (transform-safe; no lm(fml,...)) -----
-  sd_d_cv <- rep(NA_real_, length(coef_names))
-  names(sd_d_cv) <- coef_names
+  ## ----- SD of standardized estimate across folds (transform-safe; no lm(fml,...)) -----
+  sd_std_e_cv <- rep(NA_real_, length(coef_names))
+  names(sd_std_e_cv) <- coef_names
   if (!is.null(k)) {
-    d_mat <- matrix(NA_real_, nrow = k, ncol = length(coef_names))
-    colnames(d_mat) <- coef_names
+    std_e_mat <- matrix(NA_real_, nrow = k, ncol = length(coef_names))
+    colnames(std_e_mat) <- coef_names
     for (fold in seq_len(k)) {
-      tr <- mf[fold_id != fold, , drop = FALSE]
+      tr   <- mf[fold_id != fold, , drop = FALSE]
       X_tr <- model.matrix(tt_eval, tr)
       y_tr <- model.response(tr)
       fit  <- stats::lm.fit(X_tr, y_tr)
       
-      # QR-based SEs
-      R      <- qr.R(fit$qr)
-      R      <- R[seq_len(fit$rank), seq_len(fit$rank), drop = FALSE]
-      rss    <- sum(fit$residuals^2)
-      df     <- fit$df.residual
-      sigma2 <- rss / df
-      XtXinv <- chol2inv(R)
-      vcov_b <- sigma2 * XtXinv
-      se_all <- rep(NA_real_, length(fit$coefficients))
-      se_all[seq_len(fit$rank)] <- sqrt(diag(vcov_b))
+      sd_y_fold <- sd(y_tr)
       
       all_coef_names <- colnames(X_tr)
       if (has_intercept) {
         keep_idx <- which(all_coef_names != "(Intercept)")
         b_kept   <- fit$coefficients[keep_idx]
-        se_kept  <- se_all[keep_idx]
+        X_kept   <- X_tr[, keep_idx, drop = FALSE]
         names(b_kept) <- all_coef_names[keep_idx]
       } else {
-        b_kept  <- fit$coefficients
-        se_kept <- se_all
+        b_kept   <- fit$coefficients
+        X_kept   <- X_tr
         names(b_kept) <- all_coef_names
       }
       
-      d_fold <- cohen_d_from_fit(names(b_kept), b_kept, se_kept, df)
-      present <- intersect(coef_names, names(d_fold))
-      d_mat[fold, present] <- d_fold[match(present, names(d_fold))]
+      sd_x_vec   <- apply(X_kept, 2, sd)
+      std_e_fold <- std_est_from_fit(names(b_kept), b_kept, sd_x_vec, sd_y_fold)
+      
+      present <- intersect(coef_names, names(std_e_fold))
+      std_e_mat[fold, present] <- std_e_fold[match(present, names(std_e_fold))]
     }
-    sd_d_cv <- apply(d_mat, 2, stats::sd, na.rm = TRUE)
+    sd_std_e_cv <- apply(std_e_mat, 2, stats::sd, na.rm = TRUE)
   }
   
-  ## ---------------- d-based Pratt-style importance ----------------
+  ## ---------------- Pratt-style importance (std_est * correlation) ----------------
   # choose target R² (in-sample vs validation)
   if (!is.null(k) || !is.null(pct_train)) {
     R2_target <- if (!is.na(r2_oos)) r2_oos else r2_in
@@ -240,9 +228,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     R2_target <- r2_in
   }
   
-  # coefficient-level d
-  # cohen_d_df: variable (coef name), cohens_d
-  # map to all non-intercept coefficients in the model matrix
+  # coefficient-level standardized beta
   mm2      <- stats::model.matrix(model)
   coef_all <- colnames(mm2)
   coef_noi <- coef_all[coef_all != "(Intercept)"]
@@ -256,10 +242,11 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   }, numeric(1))
   names(r_vec) <- coef_noi
   
-  d_vec <- cohen_d_df$cohens_d[match(coef_noi, cohen_d_df$variable)]
-  d_vec[is.na(d_vec)] <- 0
+  std_e_vec <- std_est_df$std_est[match(coef_noi, std_est_df$variable)]
+  std_e_vec[is.na(std_e_vec)] <- 0
   
-  raw_contrib <- d_vec * r_vec
+  # Pratt: std_est * r. These sum to R²_in by construction in OLS.
+  raw_contrib <- std_e_vec * r_vec
   
   pratt_coef_df <- tibble::tibble(
     variable = coef_noi,
@@ -278,6 +265,8 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   
   S_tot <- sum(term_sum$S, na.rm = TRUE)
   
+  # Rescale to target R² (matters when validation R² differs from in-sample R²;
+  # is essentially a no-op when R2_target == r2_in since S_tot == r2_in by construction).
   if (is.finite(S_tot) && S_tot != 0 && is.finite(R2_target) && !is.na(R2_target)) {
     term_sum <- term_sum |>
       dplyr::mutate(Pratt_term = S / S_tot * R2_target)
@@ -317,9 +306,9 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
                        term     = termLbl[assign_no_int],
                        stringsAsFactors = FALSE)
   
-  eff_size_df <- dplyr::left_join(cohen_d_df, map_df, by = "variable")
+  eff_size_df <- dplyr::left_join(std_est_df, map_df, by = "variable")
   
-  # attach Pratt (d-based) at coefficient level
+  # attach Pratt at coefficient level
   pratt_df_for_join <- tibble::tibble(
     variable = names(pratt_vec)[names(pratt_vec) != "(Intercept)"],
     !!lift_col_name := as.numeric(pratt_vec[names(pratt_vec) != "(Intercept)"])
@@ -331,9 +320,9 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   ci_fmt  <- apply(ci_mat[coef_rows, , drop = FALSE], 1,
                    function(x) sprintf("[%.2f, %.2f]", round(x[1],2), round(x[2],2)))
   idx_eff <- match(coef_rows, eff_size_df$variable)
-  cohen_d_vec <- eff_size_df$cohens_d[idx_eff]
+  std_est_disp_vec <- eff_size_df$std_est[idx_eff]
   vif_vec     <- as.numeric(vif_values[coef_rows])
-  sd_d_vec    <- sd_d_cv[match(coef_rows, names(sd_d_cv))]
+  sd_std_e_vec <- sd_std_e_cv[match(coef_rows, names(sd_std_e_cv))]
   lift_vec    <- eff_size_df[[lift_col_name]][idx_eff]
   
   base_cols <- data.frame(
@@ -341,8 +330,8 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     Coef      = finalfit::round_tidy(est_vec, 2),
     Conf_Int  = ci_fmt,
     p_value   = paste0(finalfit::round_tidy(p_vec, 3), sapply(p_vec, add_stars)),
-    Cohen_d   = finalfit::round_tidy(cohen_d_vec, 2),
-    SD_d      = finalfit::round_tidy(sd_d_vec, 2),
+    Std.Est   = finalfit::round_tidy(std_est_disp_vec, 2),
+    SD_Est    = finalfit::round_tidy(sd_std_e_vec, 2),
     VIF       = finalfit::round_tidy(vif_vec, 2),
     stringsAsFactors = FALSE, check.names = FALSE
   )
@@ -359,7 +348,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
                            round(ci_mat["(Intercept)",1],2),
                            round(ci_mat["(Intercept)",2],2)),
       p_value    = paste0(finalfit::round_tidy(ip, 3), add_stars(ip)),
-      Cohen_d    = "", SD_d = "", VIF = "", PI = "",
+      Std.Est    = "", SD_Est = "", VIF = "", PI = "",
       stringsAsFactors = FALSE, check.names = FALSE
     )
     helper_table <- rbind(intercept_row, helper_table)
@@ -373,8 +362,8 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     Coef      = "Coef",
     Conf_Int  = "CI_95%",
     p_value   = "p_value",
-    Cohen_d   = "Cohens_d",
-    SD_d      = "SD_d",
+    Std.Est   = "Std.Est",
+    SD_Est    = "SD(Est.)",
     VIF       = "VIF"
   )
   colnames_df <- vapply(names(helper_table), function(n) {
@@ -391,7 +380,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   Coef_raw <- summ_output[["coeftable"]][, 1]
   Coef     <- align_num_string(Coef_raw)
   
-  wanted <- c("p_value","Cohens_d","SD_d","VIF", lift_col_name)
+  wanted <- c("p_value","Std.Est","SD(Est.)","VIF", lift_col_name)
   wanted <- wanted[wanted %in% colnames(helper_table)]
   
   helper_rows <- match(c("(Intercept)", old_rn), helper_table[[1]])
@@ -403,14 +392,17 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   rownames(new_ct) <- make.unique(old_rn)
   
   output_table <- new_ct[, 1, drop = FALSE]
-  if (cohens_d_col && "Cohens_d" %in% colnames(new_ct)) output_table$`Cohens_d` <- new_ct$`Cohens_d`
-  if (cohens_d_col && sd_d && !is.null(k) && "SD_d" %in% colnames(new_ct)) output_table$`SD_d` <- new_ct$`SD_d`
+  if (std_est_col && "Std.Est" %in% colnames(new_ct)) output_table$`Std.Est` <- new_ct$`Std.Est`
+  if (std_est_col && sd_est && !is.null(k) && "SD(Est.)" %in% colnames(new_ct)) output_table$`SD_Est` <- new_ct$`SD_Est`
   if (vif_col && "VIF" %in% colnames(new_ct)) output_table$`VIF` <- new_ct$`VIF`
   if (PI_col && lift_col_name %in% colnames(new_ct)) {
     output_table[[lift_col_name]] <- align_num_string(new_ct[[lift_col_name]])
   }
-  if ("Cohens_d" %in% colnames(output_table)) {
-    output_table$Cohens_d <- align_num_string(output_table$Cohens_d)
+  if ("Std.Est" %in% colnames(output_table)) {
+    output_table$Std.Est <- align_num_string(output_table$Std.Est)
+  }
+  if ("SD(Est.)" %in% colnames(output_table)) {
+    output_table$SD_Est <- align_num_string(output_table$SD_Est)
   }
   output_table$`p_value` <- new_ct$`p_value`
   summ_output[["coeftable"]] <- output_table
@@ -477,7 +469,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   
   cat(paste0(rendered, collapse = "\n"), "\n")
   cat("p: *** is <.001, ** is <.01, * is <.05\n",
-      "|d|: Trivial <.1 < Tiny <.2 < Small <.5 < Medium <.8 < Large <1.4 < Huge\n",
+      "|Std.Est|: Trivial <.1 < Small <.3 < Medium <.5 < Large\n",
       sep = "")
   cat("\n")
 }
