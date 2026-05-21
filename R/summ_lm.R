@@ -45,8 +45,15 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     is_num <- !is.na(num)
     out[is_num] <- sprintf("%.2f", num[is_num])
     out[was_neg_zero] <- "-0.00"
-    pos <- is_num & !grepl("^\\s*-", out)
-    out[pos] <- paste0("\u2007", out[pos])
+    
+    # Pad shorter numeric entries with figure-spaces to align on decimal
+    if (any(is_num)) {
+        max_w <- max(nchar(out[is_num]))
+        needs_pad <- is_num & nchar(out) < max_w
+        out[needs_pad] <- vapply(out[needs_pad], function(s) {
+            paste0(strrep("\u2007", max_w - nchar(s)), s)
+        }, character(1))
+    }
     out
   }
   
@@ -57,8 +64,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
     1 - sum((y - yhat)^2) / SST
   }
   
-  # Standardized estimate from coefficient, predictor SD, and outcome SD
-  # b_std = b * sd(x) / sd(y)
+  # Standardized estimate for CV loop
   std_est_from_fit <- function(coef_names, b, sd_x_vec, sd_y) {
     setNames(b * sd_x_vec / sd_y, coef_names)
   }
@@ -359,7 +365,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   internal_pi_col <- "PI"
   nice_map <- c(
     Parameter = paste0("DV: ", dep_var),
-    Coef      = "Coef",
+    Coef      = "Est.",
     Conf_Int  = "CI_95%",
     p_value   = "p_value",
     Std.Est   = "Std.Est",
@@ -387,7 +393,7 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   helper_cols <- helper_table[ helper_rows, wanted, drop = FALSE ]
   rownames(helper_cols) <- make.unique(c("(Intercept)", old_rn))
   
-  new_ct <- cbind(Coef = Coef, helper_cols[ make.unique(old_rn), , drop = FALSE ])
+  new_ct <- cbind(Est. = Coef, helper_cols[ make.unique(old_rn), , drop = FALSE ])
   new_ct <- as.data.frame(new_ct, stringsAsFactors = FALSE)
   rownames(new_ct) <- make.unique(old_rn)
   
