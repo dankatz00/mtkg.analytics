@@ -347,14 +347,17 @@ summ_lm <- function(model, k = NULL, pct_train = NULL,
   # optional intercept row
   if ("(Intercept)" %in% rownames(sum_model[["coefficients"]])) {
     ip <- sum_model[["coefficients"]]["(Intercept)", "Pr(>|t|)"]
+    intercept_est <- sum_model[["coefficients"]]["(Intercept)", "Estimate"]
+    intercept_std_est <- intercept_est / sd(y)
     intercept_row <- data.frame(
       Parameter  = "(Intercept)",
-      Coef       = finalfit::round_tidy(sum_model[["coefficients"]]["(Intercept)","Estimate"], 2),
+      Coef       = finalfit::round_tidy(intercept_est, 2),
       Conf_Int   = sprintf("[%.2f, %.2f]",
                            round(ci_mat["(Intercept)",1],2),
                            round(ci_mat["(Intercept)",2],2)),
       p_value    = paste0(finalfit::round_tidy(ip, 3), add_stars(ip)),
-      Std.Est    = "", SD_Est = "", VIF = "", PI = "",
+      Std.Est    = finalfit::round_tidy(intercept_std_est, 2),
+      SD_Est = "", VIF = "", PI = "",
       stringsAsFactors = FALSE, check.names = FALSE
     )
     helper_table <- rbind(intercept_row, helper_table)
